@@ -54,7 +54,7 @@ def esegui_agente(comando: ComandoUtente):
     try:
         # L'agente analizza il prompt e decide se usare il tool di WordPress
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.5-flash',
             contents=comando.prompt,
             config=types.GenerateContentConfig(
                 tools=[crea_post_wordpress],
