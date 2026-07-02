@@ -1,84 +1,62 @@
-import os
-import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
+import os
+import requests
 
-app = FastAPI(title="Hub Agenti AI - Produzione")
+app = FastAPI()
 
-# Configurazione API Gemini
-api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key) if api_key else None
+# Il client inizializza automaticamente Gemini usando la variabile GEMINI_API_KEY su Render
+client = genai.Client()
 
-# --- TOOL 1: I MUSCOLI PER WORDPRESS ---
-def crea_post_wordpress(titolo: str, contenuto: str, stato: str = "draft") -> str:
-    """Pubblica un articolo su WordPress usando le REST API native."""
-    wp_url = os.getenv("WP_URL") # Es: https://iltuosito.com/wp-json/wp/v2
-    user = os.getenv("WP_USERNAME")
-    password = os.getenv("WP_APP_PASSWORD")
-    
-    if not wp_url or not user or not password:
-        return "Errore: Credenziali WordPress mancanti nelle variabili d'ambiente."
-        
-    url = f"{wp_url}/posts"
-    payload = {"title": titolo, "content": contenuto, "status": stato}
-    
-    try:
-        response = requests.post(url, json=payload, auth=(user, password), timeout=10)
-        if response.status_code == 201:
-            return f"Successo: Articolo creato con ID {response.json().get('id')}"
-        return f"Errore WP: {response.status_code} - {response.text}"
-    except Exception as e:
-        return f"Errore di connessione a WP: {str(e)}"
-
-# Mappatura dei tool disponibili per l'agente
-tools_disponibili = {"crea_post_wordpress": crea_post_wordpress}
-
-class ComandoUtente(BaseModel):
+class RichiestaPrompt(BaseModel):
     prompt: str
 
-@app.get("/")
-def check():
-    return {
-        "status": "online",
-        "llm_connected": client is not None,
-        "wp_configured": os.getenv("WP_URL") is not None
+def crea_post_google_business(testo_post: str):
+    """
+    Funzione (Tool) per pubblicare un aggiornamento di tipo Novità su Google Business Profile.
+    """
+    account_id = os.environ.get('GOOGLE_BUSINESS_ACCOUNT_ID')
+    location_id = os.environ.get('GOOGLE_BUSINESS_LOCATION_ID')
+    api_key = os.environ.get('GEMINI_API_KEY')
+    
+    # URL standard e documentato delle API ufficiali di Google My Business
+    url = f"https://mybusiness.googleapis.com/v4/accounts/{account_id}/locations/{location_id}/localPosts?key={api_key}"
+    
+    payload = {
+        "languageCode": "it",
+        "summary": testo_post,
+        "topicType": "STANDARD"
     }
+    
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code in [200, 201]:
+            return f"Successo! Post pubblicato su Google Business Profile con ID: {response.json().get('name')}"
+        else:
+            return f"Errore API Google Business: {response.status_code} - {response.text}"
+    except Exception as e:
+        return f"Eccezione durante la chiamata API: {str(e)}"
 
 @app.post("/esegui")
-def esegui_agente(comando: ComandoUtente):
-    if not client:
-        raise HTTPException(status_code=500, detail="Chiave API Gemini mancante.")
-        
+async def esegui_agente(richiesta: RichiestaPrompt):
     try:
-        # L'agente analizza il prompt e decide se usare il tool di WordPress
+        # Chiamata a Gemini 2.5 Flash con istruzioni e attivazione dei tool
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=comando.prompt,
+            contents=richiesta.prompt,
             config=types.GenerateContentConfig(
-                tools=[crea_post_wordpress],
                 system_instruction=(
-                    "Sei un agente esperto di Copywriting e SEO. Se l'utente ti chiede di scrivere "
-                    "e pubblicare/salvare un articolo, genera il testo in HTML pulito e invocato il tool "
-                    "crea_post_wordpress inserendo titolo e contenuto. Se non richiesto esplicitamente, rispondi solo al testo."
-                )
-            )
+                    "Sei l'Agente Direttore Marketing di Visual Brand Studio. Il tuo compito è "
+                    "analizzare le richieste dell'utente, strutturare strategie di comunicazione, "
+                    "identificare parole chiave per il territorio e utilizzare il tool a disposizione "
+                    "per pubblicare aggiornamenti sulla scheda Google quando l'utente ti chiede di pubblicare."
+                ),
+                # Mettiamo la funzione a disposizione del modello
+                tools=[crea_post_google_business],
+            ),
         )
-        
-        # Se il cervello decide di attivare i muscoli (chiamata a funzione)
-        if response.function_calls:
-            for call in response.function_calls:
-                if call.name in tools_disponibili:
-                    risultato_tool = tools_disponibili[call.name](**call.args)
-                    return {"esito_agente": "Tool Eseguito", "dettaglio": risultato_tool}
-                    
-        return {"esito_agente": "Risposta Testuale", "risposta": response.text}
-        
+        return {"esito_agente": "Operazione completata", "risposta": response.text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
